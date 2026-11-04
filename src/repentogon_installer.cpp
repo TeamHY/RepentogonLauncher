@@ -14,7 +14,9 @@
 #include "shared/zip.h"
 #include "shared/gitlab_versionchecker.h"
 #include "shared/version_utils.h"
+#ifndef LAUNCHER_HEADLESS
 #include "wx/msgdlg.h"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -110,6 +112,9 @@ namespace Launcher {
 		}
 		if (!CheckLauncherVersionRequirement()) {
 			Logger::Error("RepentogonInstaller::InstallRepentogonThread: doesnt meet the required launcher version\n");
+#ifdef LAUNCHER_HEADLESS
+			PushNotification(true, "REPENTOGON update failed to download due to an outdated launcher version");
+#else
 			wxMessageBox(
 				"REPENTOGON update failed to download due to an outdated launcher version.\n"
 				"Please update it to continue to get the latest updates!\n",
@@ -117,6 +122,7 @@ namespace Launcher {
 				wxOK | wxOK_DEFAULT | wxICON_ERROR,
 				NULL
 			);
+#endif
 			_installationState.result = REPENTOGON_INSTALLATION_RESULT_LAUNCHER_UPDATE_REQUIRED;
 			return false;
 		}

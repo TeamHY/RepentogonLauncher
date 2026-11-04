@@ -1,7 +1,12 @@
 #pragma once
 
 #include <optional>
+#ifdef LAUNCHER_HEADLESS
+/* Headless builds (rgon-cli) do not link against wxWidgets. */
+typedef wchar_t wxChar;
+#else
 #include "wx/wxchar.h"
+#endif
 
 #include "launcher/launcher_configuration.h"
 

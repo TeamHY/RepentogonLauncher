@@ -7,6 +7,8 @@ set (CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/;${CMAKE_MODULE_PATH}")
 set (CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 option (LAUNCHER_UNSTABLE "Build unstable version instead of release version" OFF)
+option (LAUNCHER_BUILD_GUI "Build the wxWidgets launcher and its self-updater" ON)
+option (LAUNCHER_BUILD_HEADLESS "Build rgon-cli, the headless launcher (no wxWidgets)" ON)
 
 # Stupid MSVC
 add_compile_definitions (_CRT_SECURE_NO_WARNINGS)
@@ -17,9 +19,11 @@ include (cmake/deps/curl.cmake)
 
 include (cmake/deps/inih.cmake)
 
+if (LAUNCHER_BUILD_GUI)
 include (cmake/deps/wxWidgets_pre.cmake)
 add_subdirectory (deps/wxWidgets)
 include (cmake/deps/wxWidgets.cmake)
+endif()
 
 include (cmake/deps/zlib_pre.cmake)
 add_subdirectory (deps/zlib)
@@ -64,6 +68,7 @@ target_include_directories (bspatch PRIVATE
 
 enable_language("RC")
 set (WIN32_RESOURCES ${CMAKE_SOURCE_DIR}/assets/icon.rc)
+if (LAUNCHER_BUILD_GUI)
 file (GLOB_RECURSE LAUNCHER_FILES src/*.cpp "include/launcher/*.h")
 add_library (REPENTOGONLauncher SHARED ${LAUNCHER_FILES} ${WIN32_RESOURCES})
 set_target_properties(REPENTOGONLauncher PROPERTIES OUTPUT_NAME "REPENTOGONLauncherApp")
@@ -128,4 +133,9 @@ add_custom_command(
 if (LAUNCHER_UNSTABLE)
     # add_subdirectory (testing)
     target_compile_definitions (REPENTOGONLauncher PRIVATE LAUNCHER_UNSTABLE)
+endif()
+endif() # LAUNCHER_BUILD_GUI
+
+if (LAUNCHER_BUILD_HEADLESS)
+    add_subdirectory (headless)
 endif()

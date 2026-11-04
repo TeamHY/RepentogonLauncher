@@ -16,9 +16,11 @@
 #include "launcher/repentogon_installation.h"
 #include "launcher/standalone_rgon_folder.h"
 
+#ifndef LAUNCHER_HEADLESS
 #include <wx/wx.h>
 #include <wx/frame.h>
 #include <wx/stattext.h>
+#endif
 
 namespace standalone_rgon {
     uint32_t REPENTOGON_FUCK_METHOD = 1;

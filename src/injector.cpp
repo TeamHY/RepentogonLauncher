@@ -9,11 +9,16 @@
 
 #include <chrono>
 #include <filesystem>
+#include <sstream>
+#include <thread>
 
+#ifndef LAUNCHER_HEADLESS
 #include <wx/wx.h>
 
 #include "launcher/app.h"
+#endif
 #include "launcher/cli.h"
+#include "launcher/injector.h"
 #include "launcher/diff_patcher.h"
 #include "launcher/launcher_configuration.h"
 #include "launcher/loader.h"
@@ -90,11 +95,30 @@ DWORD CreateIsaac(const char* path, bool isLegacy, LauncherConfiguration const* 
 	return result;
 }
 
+/* Return the module that contains this code (REPENTOGONLauncherApp.dll in
+ * the GUI build, rgon-cli.exe in the headless build), so the .trampo section
+ * can be located regardless of how the injector is packaged.
+ */
+static HMODULE GetSelfModule() {
+	HMODULE self = NULL;
+	if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		(LPCWSTR)&GetSelfModule, &self)) {
+		Logger::Error("Unable to get the handle of the current module: %d\n", GetLastError());
+		return NULL;
+	}
+
+	return self;
+}
+
 // #pragma code_seg(push, r1, ".trampo")
 int UpdateMemory(LauncherConfiguration const* configuration, HANDLE process,
 	PROCESS_INFORMATION const*, void** page, size_t* functionOffset,
 	size_t* paramOffset) {
-	HMODULE self = GetModuleHandle(L"REPENTOGONLauncherApp.dll");
+	HMODULE self = GetSelfModule();
+	if (!self) {
+		return -1;
+	}
+
 	PIMAGE_NT_HEADERS ntHeaders = ImageNtHeader(self);
 	char* base = (char*)&(ntHeaders->OptionalHeader);
 	base += ntHeaders->FileHeader.SizeOfOptionalHeader;
@@ -296,42 +320,70 @@ int CreateAndWait(HANDLE process, void* remotePage, size_t functionOffset, size_
 	return threadCode;
 }
 
-DWORD Launcher::Launch(ILoggableGUI* gui, const char* path, bool isLegacy,
-	LauncherConfiguration const* configuration) {
-	HANDLE process;
-	void* remotePage;
-	size_t functionOffset, paramOffset;
-	PROCESS_INFORMATION processInfo;
+/* Start Isaac, load Repentogon into it when the launch mode requires it, and
+ * resume its main thread.
+ *
+ * On success, processInfo and process hold open handles that the caller must
+ * close. On failure, the game process (if any) is terminated and every handle
+ * is closed.
+ */
+static bool StartIsaac(ILoggableGUI* gui, const char* path, bool isLegacy,
+	LauncherConfiguration const* configuration, PROCESS_INFORMATION* processInfo,
+	HANDLE* process) {
+	void* remotePage = NULL;
+	size_t functionOffset = 0, paramOffset = 0;
+	*process = NULL;
 
-	if (FirstStageInit(path, isLegacy, configuration, &process, &remotePage, &functionOffset, &paramOffset, &processInfo)) {
+	if (FirstStageInit(path, isLegacy, configuration, process, &remotePage, &functionOffset, &paramOffset, processInfo)) {
 		gui->LogError("Low level error encountered while starting the game, check log files\n");
-		return 0xFFFFFFFF;
+		/* Do not leave a suspended game behind. */
+		if (processInfo->hProcess) {
+			TerminateProcess(processInfo->hProcess, 0xFFFFFFFF);
+			CloseHandle(processInfo->hThread);
+			CloseHandle(processInfo->hProcess);
+		}
+		if (*process) {
+			CloseHandle(*process);
+		}
+		return false;
 	}
 
 	if (configuration->IsaacLaunchMode() == LAUNCH_MODE_REPENTOGON) {
-		if (CreateAndWait(process, remotePage, functionOffset, paramOffset)) {
+		if (CreateAndWait(*process, remotePage, functionOffset, paramOffset)) {
 			gui->LogError("Error encountered while injecting Repentogon, check log files\n");
-			if (!TerminateProcess(process, 0xFFFFFFFF)) {
+			if (!TerminateProcess(*process, 0xFFFFFFFF)) {
 				gui->LogError("Unable to kill Isaac process: %d\n", GetLastError());
 			}
-			CloseHandle(processInfo.hThread);
-			CloseHandle(processInfo.hProcess);
-			CloseHandle(process);
-			return 0xFFFFFFFF;
+			CloseHandle(processInfo->hThread);
+			CloseHandle(processInfo->hProcess);
+			CloseHandle(*process);
+			return false;
 		}
 	}
 
-	DWORD result = ResumeThread(processInfo.hThread);
+	DWORD result = ResumeThread(processInfo->hThread);
 	if (result == -1) {
 		Logger::Error("Failed to resume isaac-ng.exe main thread: %d\n", GetLastError());
 		gui->LogError("Game was unable to leave its suspended state, aborting launch\n");
-		TerminateProcess(process, 0xFFFFFFFF);
-		CloseHandle(processInfo.hThread);
-		CloseHandle(processInfo.hProcess);
-		CloseHandle(process);
-		return 0xFFFFFFFF;
+		TerminateProcess(*process, 0xFFFFFFFF);
+		CloseHandle(processInfo->hThread);
+		CloseHandle(processInfo->hProcess);
+		CloseHandle(*process);
+		return false;
 	} else {
 		Logger::Info("Resumed main thread of isaac-ng.exe, previous supend count was %d\n", result);
+	}
+
+	return true;
+}
+
+DWORD Launcher::Launch(ILoggableGUI* gui, const char* path, bool isLegacy,
+	LauncherConfiguration const* configuration) {
+	HANDLE process;
+	PROCESS_INFORMATION processInfo;
+
+	if (!StartIsaac(gui, path, isLegacy, configuration, &processInfo, &process)) {
+		return 0xFFFFFFFF;
 	}
 
 	Logger::Info("Waiting for isaac-ng.exe main thread to return\n");
@@ -351,4 +403,26 @@ DWORD Launcher::Launch(ILoggableGUI* gui, const char* path, bool isLegacy,
 	CloseHandle(process);
 
 	return exitCode;
+}
+
+bool Launcher::LaunchDetached(ILoggableGUI* gui, const char* path, bool isLegacy,
+	LauncherConfiguration const* configuration, DWORD* processId) {
+	HANDLE process;
+	PROCESS_INFORMATION processInfo;
+
+	if (!StartIsaac(gui, path, isLegacy, configuration, &processInfo, &process)) {
+		return false;
+	}
+
+	if (processId) {
+		*processId = processInfo.dwProcessId;
+	}
+
+	Logger::Info("isaac-ng.exe started (process ID = %d), not waiting for it to exit\n", processInfo.dwProcessId);
+
+	CloseHandle(processInfo.hProcess);
+	CloseHandle(processInfo.hThread);
+	CloseHandle(process);
+
+	return true;
 }
