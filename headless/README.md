@@ -16,7 +16,7 @@ rgon-cli must be built for **Win32**, like the GUI launcher (the game is 32-bit)
 
 ```sh
 git submodule update --init --depth 1 deps/curl deps/zlib deps/inih deps/rapidjson deps/libzip
-cmake -G "Visual Studio 17 2022" -A Win32 -B build -DLAUNCHER_BUILD_GUI=OFF
+cmake -A Win32 -B build -DLAUNCHER_BUILD_GUI=OFF   # Visual Studio generator
 cmake --build build --config Release --target rgon-cli
 cmake --install build --config Release --component rgon-cli --prefix dist/rgon-cli
 ```
