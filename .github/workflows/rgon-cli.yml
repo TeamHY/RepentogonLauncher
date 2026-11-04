@@ -69,13 +69,44 @@ jobs:
         shell: pwsh
         run: |
           $exe = Resolve-Path dist/rgon-cli/rgon-cli.exe
-          $process = Start-Process -FilePath $exe -ArgumentList 'version' -Wait -PassThru -NoNewWindow `
-            -RedirectStandardOutput dist/version.txt
-          Get-Content dist/version.txt
-          if ($process.ExitCode -ne 0) { throw "rgon-cli version exited with $($process.ExitCode)" }
-          $result = Get-Content dist/version.txt | Select-Object -Last 1 | ConvertFrom-Json
-          if (-not $result.ok -or $result.cliVersion -ne '${{ steps.version.outputs.version }}') {
+
+          function Invoke-Cli([string[]] $arguments, [string] $output) {
+            $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru -NoNewWindow `
+              -RedirectStandardOutput $output
+            Get-Content $output | Out-Host
+            return @{
+              ExitCode = $process.ExitCode
+              Result = Get-Content $output | Select-Object -Last 1 | ConvertFrom-Json
+            }
+          }
+
+          # The loader routine copied into the game lives in its own section.
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $sectionCount = [BitConverter]::ToUInt16($bytes, $pe + 6)
+          $optionalHeaderSize = [BitConverter]::ToUInt16($bytes, $pe + 20)
+          $sections = for ($i = 0; $i -lt $sectionCount; $i++) {
+            $offset = $pe + 24 + $optionalHeaderSize + 40 * $i
+            [System.Text.Encoding]::ASCII.GetString($bytes, $offset, 8).TrimEnd([char]0)
+          }
+          Write-Host "Sections: $($sections -join ', ')"
+          if ($sections -notcontains '.trampo') { throw ".trampo section missing" }
+
+          $version = Invoke-Cli @('version') dist/version.txt
+          if ($version.ExitCode -ne 0 -or -not $version.Result.ok -or
+              $version.Result.cliVersion -ne '${{ steps.version.outputs.version }}') {
             throw "unexpected version output"
+          }
+
+          # No game on the runner: exercises argument parsing and installation checks.
+          $status = Invoke-Cli @('status', '--isaac', 'C:\no-isaac-here') dist/status.txt
+          if ($status.ExitCode -ne 1 -or $status.Result.error -ne 'invalid_isaac') {
+            throw "unexpected status output"
+          }
+
+          $usage = Invoke-Cli @('launch', '--launch-mode', 'unknown') dist/usage.txt
+          if ($usage.ExitCode -ne 2 -or $usage.Result.error -ne 'usage') {
+            throw "unexpected usage output"
           }
 
       - uses: actions/upload-artifact@v4
